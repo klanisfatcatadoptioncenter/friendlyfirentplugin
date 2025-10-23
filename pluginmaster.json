@@ -16,5 +16,8 @@
   "CanUnloadAsync": false,
   "LoadPriority": 0,
   "Punchline": "Displays PlayerNames of friends in Frontlines.",
-  "AcceptsFeedback": true
+  "AcceptsFeedback": false
+    "DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
+	"DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
+	"DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip"
 }

@@ -1,0 +1,20 @@
+{
+  "Author": "obesefeline",
+  "Name": "FriendlyFire",
+  "InternalName": "SamplePlugin",
+  "AssemblyVersion": "0.0.0.1",
+  "Description": "Use /friendlyfire to toggle the configuration window.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "sample",
+    "plugin",
+    "goats"
+  ],
+  "DalamudApiLevel": 13,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Displays PlayerNames of friends in Frontlines.",
+  "AcceptsFeedback": true
+}

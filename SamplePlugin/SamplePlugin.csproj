@@ -3,12 +3,11 @@
     <PropertyGroup>
         <Version>0.0.0.1</Version>
         <Description>Displays the playernames of your friends in FrontLines.</Description>
-        <PackageProjectUrl>https://github.com/potionfizzles/friendlyfiredev</PackageProjectUrl>
+        <PackageProjectUrl>https://github.com/goatcorp/SamplePlugin</PackageProjectUrl>
         <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
         <IsPackable>false</IsPackable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>latest</LangVersion>
-        <Nullable>enable</Nullable>
     </PropertyGroup>
 
     <ItemGroup>
@@ -18,18 +17,8 @@
         </Content>
     </ItemGroup>
 
-    <!-- ClientStructs via project references (no DLLs from AppData) -->
     <ItemGroup>
-        <!-- Runtime library used by generated resolver -->
-        <ProjectReference Include="vendor\FFXIVClientStructs\InteropGenerator.Runtime\InteropGenerator.Runtime.csproj" />
-        <!-- ClientStructs runtime types -->
-        <ProjectReference Include="vendor\FFXIVClientStructs\FFXIVClientStructs.csproj" />
-        <!-- Analyzers that generate the Addresses table -->
-        <ProjectReference Include="vendor\FFXIVClientStructs\FFXIVClientStructs.Generators\FFXIVClientStructs.Generators.csproj"
-                          OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-        <ProjectReference Include="vendor\FFXIVClientStructs\InteropGenerator\InteropGenerator.csproj"
-                          OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-        
-        
+        <!-- Pick a valid NuGet version here -->
+        <PackageReference Include="FFXIVClientStructs" Version="11.0.0" PrivateAssets="all" />
     </ItemGroup>
 </Project>

@@ -2,8 +2,9 @@ using System;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Windowing;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Interface.Utility.Raii;
+using Dalamud.Interface.Windowing;
 using Lumina.Excel.Sheets;
 
 namespace FriendlyFire.Windows;
@@ -17,29 +18,72 @@ public class ConfigWindow : Window, IDisposable
     private string newWorldName = string.Empty;
     private string lastAddError = string.Empty;
 
-    // debug helpers
-    private string cacheFilter = string.Empty;
+    // Session-only master switch for debug UI
     private bool showDebug = false;
 
     public ConfigWindow(Plugin plugin)
-        : base("FriendlyFire###FriendlyFireWindow")
+        : base("FriendlyFire Frontlines Settings###FriendlyFireWindow")
     {
         Plugin = plugin;
         Configuration = plugin.Configuration;
 
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(560, 520),
+            MinimumSize = new Vector2(560, 420),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
         };
-
-        // defensive
-        Configuration.ExtraFriends ??= new();
-        Configuration.FriendCache ??= new();
+        IsOpen = false;
     }
 
     public void Dispose() { }
     public void Toggle() => IsOpen = !IsOpen;
+
+    public override void Draw()
+    {
+        // ======= Top row: Pills (left) + Debug toggle (right) =======
+        if (ImGui.BeginTable("##ff_toprow", 2, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX))
+        {
+            ImGui.TableSetupColumn("##left", ImGuiTableColumnFlags.WidthStretch, 1f);
+            ImGui.TableSetupColumn("##right", ImGuiTableColumnFlags.WidthFixed, 130f);
+
+            ImGui.TableNextRow();
+
+            ImGui.TableSetColumnIndex(0);
+            // nudged a bit left for alignment
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() - 2f);
+            DrawPills();
+
+            ImGui.TableSetColumnIndex(1);
+            float btnW = 120f;
+            float avail = ImGui.GetContentRegionAvail().X;
+            if (avail > btnW)
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail - btnW));
+            using (ImRaii.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(6, 4)))
+            {
+                var label = showDebug ? "Debug: ON" : "Debug: OFF";
+                if (ImGui.SmallButton(label))
+                    showDebug = !showDebug;
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Show/hide experimental options and cache tools.");
+            }
+
+            ImGui.EndTable();
+        }
+
+        var inPvp = Plugin.ClientState.IsPvP;
+        ImGui.Spacing();
+        ImGui.TextDisabled(inPvp ? "Current zone: PvP" : "Current zone: Non-PvP");
+        ImGui.Spacing();
+
+        ImGui.Separator();
+        DrawExtraFriends();
+
+        if (showDebug)
+        {
+            ImGui.Separator();
+            DrawCacheBox();
+        }
+    }
 
     private static bool DrawTogglePill(string label, bool current, float width, string? tooltip = null)
     {
@@ -55,12 +99,12 @@ public class ConfigWindow : Window, IDisposable
         }
     }
 
-    private void DrawScalablePills()
+    private void DrawPills()
     {
-        var cfg = Plugin.Configuration;
+        var cfg = Configuration;
         var availX = ImGui.GetContentRegionAvail().X;
 
-        int cols = availX >= 820f ? 4 : (availX >= 520f ? 2 : 1);
+        int cols = availX >= 820f ? 4 : (availX >= 560f ? 2 : 1);
         var flags = ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.Resizable | ImGuiTableFlags.PadOuterX;
 
         if (ImGui.BeginTable("##ff_pills", cols, flags))
@@ -68,222 +112,105 @@ public class ConfigWindow : Window, IDisposable
             for (int c = 0; c < cols; c++)
                 ImGui.TableSetupColumn($"##col{c}", ImGuiTableColumnFlags.WidthStretch, 1f);
 
-            void CellPill(string label, ref bool value, string tip)
+            void Cell(System.Action drawCell)
             {
                 ImGui.TableNextColumn();
-                float cellW = ImGui.GetContentRegionAvail().X;
-                if (DrawTogglePill(label, value, cellW, tip))
-                {
-                    value = !value;
-                    cfg.Save();
-                }
+                drawCell();
             }
 
             ImGui.TableNextRow();
-            var p1 = cfg.ShowRealNamesForFriends;
-            CellPill("Friends → Real Names", ref p1, "Friends (including Extra Friends) always show real names.");
-            cfg.ShowRealNamesForFriends = p1;
 
-            if (cols == 1) ImGui.TableNextRow();
+            // Always-visible
+            Cell(() =>
+            {
+                float w = ImGui.GetContentRegionAvail().X;
+                if (DrawTogglePill("Friends → Real Names", cfg.ShowRealNamesForFriends, w,
+                        "Show real names for friends in PvP."))
+                {
+                    cfg.ShowRealNamesForFriends = !cfg.ShowRealNamesForFriends;
+                    cfg.Save();
+                }
+            });
 
             if (cols <= 2) ImGui.TableNextRow();
-            var p4 = cfg.ShowRealNamesOnlyInPvP;
-            CellPill("All → Real Names", ref p4, "Show real names for everyone in PvP.");
-            cfg.ShowRealNamesOnlyInPvP = p4;
+            Cell(() =>
+            {
+                float w = ImGui.GetContentRegionAvail().X;
+                if (DrawTogglePill("All → Real Names ", cfg.ShowRealNamesOnlyInPvP, w,
+                        "Show real names for everyone in PvP."))
+                {
+                    cfg.ShowRealNamesOnlyInPvP = !cfg.ShowRealNamesOnlyInPvP;
+                    cfg.Save();
+                }
+            });
 
-            var p2 = cfg.TestScrambleOutsidePvP;
-            CellPill("DEBUG: Scramble Friends Outside PvP", ref p2, "Field test: scramble ONLY friend nameplates outside PvP.");
-            cfg.TestScrambleOutsidePvP = p2;
+            // NEW: Role tag toggle (always visible)
+            if (cols == 1) ImGui.TableNextRow();
+            Cell(() =>
+            {
+                float w = ImGui.GetContentRegionAvail().X;
+                if (DrawTogglePill("Role Tag on Nameplate", cfg.ShowRoleTag, w,
+                        "Show player job tags next to the nameplate."))
+                {
+                    cfg.ShowRoleTag = !cfg.ShowRoleTag;
+                    cfg.Save();
+                }
+            });
+
+            // Debug-only pills
+            if (showDebug)
+            {
+                if (cols <= 2) ImGui.TableNextRow();
+                Cell(() =>
+                {
+                    float w = ImGui.GetContentRegionAvail().X;
+                    if (DrawTogglePill("DEBUG: Scramble Friends (non-PvP)", cfg.TestScrambleOutsidePvP, w,
+                            "Scramble ONLY friend nameplates outside PvP."))
+                    {
+                        cfg.TestScrambleOutsidePvP = !cfg.TestScrambleOutsidePvP;
+                        cfg.Save();
+                    }
+                });
+
+                if (cols == 1) ImGui.TableNextRow();
+                Cell(() =>
+                {
+                    float w = ImGui.GetContentRegionAvail().X;
+                    if (DrawTogglePill("DEBUG: Scramble ALL (PvP)", cfg.ScrambleAllInPvP, w,
+                            "Scramble ALL PvP nameplates; friends show real names if enabled."))
+                    {
+                        cfg.ScrambleAllInPvP = !cfg.ScrambleAllInPvP;
+                        cfg.Save();
+                    }
+                });
+
+                if (cols == 1) ImGui.TableNextRow();
+                Cell(() =>
+                {
+                    float w = ImGui.GetContentRegionAvail().X;
+                    if (DrawTogglePill("Use CID Cache in PvP", cfg.UseFriendCacheInPvP, w,
+                            "Use ContentId cache to detect friends in PvP."))
+                    {
+                        cfg.UseFriendCacheInPvP = !cfg.UseFriendCacheInPvP;
+                        cfg.Save();
+                    }
+                });
+            }
 
             ImGui.EndTable();
         }
     }
 
-    public override void Draw()
-    {
-        // light hygiene; avoid sheet check here
-        Plugin.CleanExtraFriends(save: true, validateWithSheet: false);
-
-        var inPvp = Plugin.ClientState.IsPvP;
-
-        ImGui.TextUnformatted("Toggle FriendlyFire");
-        ImGui.SameLine();
-        ImGui.Spacing();
-        ImGui.SameLine();
-        if (ImGui.SmallButton(showDebug ? "Hide Debug##ff_dbg_toggle" : "Show Debug##ff_dbg_toggle"))
-            showDebug = !showDebug;
-
-        ImGui.Separator();
-        DrawScalablePills();
-
-        ImGui.Spacing();
-        ImGui.TextDisabled(inPvp ? "Current zone: PvP" : "Current zone: Non-PvP");
-        ImGui.Spacing();
-        ImGui.Separator();
-
-        if (showDebug)
-        {
-            DrawDebugFriendCache();
-            ImGui.Separator();
-        }
-
-        DrawExtraFriends();
-    }
-
-    // ===========================
-    // Debug: Friend Cache section
-    // ===========================
-    private void DrawDebugFriendCache()
-    {
-        var cfg = Configuration;
-        cfg.FriendCache ??= new();
-
-        ImGui.TextUnformatted("Debug — Friend Cache (names learned outside PvP or from opening the Friends list)");
-        ImGui.Spacing();
-
-        // Top controls (left group)
-        using (ImRaii.Group())
-        {
-            ImGui.TextDisabled($"Cached entries: {cfg.FriendCache.Count}");
-            ImGui.TextDisabled($"TTL (days):");
-            ImGui.SameLine();
-            int ttl = cfg.FriendCacheDaysToLive <= 0 ? 90 : cfg.FriendCacheDaysToLive;
-            if (ImGui.InputInt("##ff_ttl", ref ttl))
-            {
-                cfg.FriendCacheDaysToLive = Math.Max(7, ttl);
-                cfg.Save();
-            }
-
-            bool useCache = cfg.UseFriendCacheInPvP;
-            if (ImGui.Checkbox("Use cache in PvP", ref useCache))
-            {
-                cfg.UseFriendCacheInPvP = useCache;
-                cfg.Save();
-            }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Clear cache"))
-            {
-                cfg.FriendCache.Clear();
-                cfg.Save();
-            }
-        }
-
-        // Right-side controls (filter)
-        ImGui.SameLine();
-        ImGui.Spacing();
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(240f);
-        ImGui.InputTextWithHint("##ff_cache_filter", "Filter (name/world)", ref cacheFilter, 64);
-
-        ImGui.Spacing();
-
-        // Table
-        var flags =
-            ImGuiTableFlags.Borders |
-            ImGuiTableFlags.RowBg |
-            ImGuiTableFlags.SizingStretchProp |
-            ImGuiTableFlags.Resizable |
-            ImGuiTableFlags.ScrollY |
-            ImGuiTableFlags.Sortable;
-
-        var avail = ImGui.GetContentRegionAvail();
-        float tableHeight = MathF.Max(200f, avail.Y * 0.45f);
-        using (ImRaii.Child("##ff_cache_wrap", new Vector2(0, tableHeight), true))
-        {
-            if (ImGui.BeginTable("##ff_cache_table", 5, flags))
-            {
-                ImGui.TableSetupScrollFreeze(0, 1);
-                ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.38f);
-                ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.WidthStretch, 0.20f);
-                ImGui.TableSetupColumn("WorldId", ImGuiTableColumnFlags.WidthFixed, 80f);
-                ImGui.TableSetupColumn("Last Seen (UTC)", ImGuiTableColumnFlags.WidthStretch, 0.27f);
-                ImGui.TableSetupColumn("Age", ImGuiTableColumnFlags.WidthStretch, 0.15f);
-                ImGui.TableHeadersRow();
-
-                var entries = cfg.FriendCache;
-
-                // Filtering (case-insensitive)
-                var filter = (cacheFilter ?? string.Empty).Trim();
-                bool hasFilter = filter.Length > 0;
-                if (hasFilter) filter = filter.ToLowerInvariant();
-
-                for (int i = 0; i < entries.Count; i++)
-                {
-                    var e = entries[i];
-                    if (e == null) continue;
-
-                    string name = e.Name ?? string.Empty;
-                    string? worldName = WorldName(e.WorldId);
-                    string worldCell = worldName ?? $"#{e.WorldId}";
-
-                    if (hasFilter)
-                    {
-                        var hay = $"{name} {worldCell}".ToLowerInvariant();
-                        if (!hay.Contains(filter))
-                            continue;
-                    }
-
-                    ImGui.TableNextRow();
-
-                    ImGui.TableSetColumnIndex(0);
-                    ImGui.TextUnformatted(name);
-
-                    ImGui.TableSetColumnIndex(1);
-                    ImGui.TextUnformatted(worldCell);
-
-                    ImGui.TableSetColumnIndex(2);
-                    ImGui.TextUnformatted(e.WorldId.ToString());
-
-                    ImGui.TableSetColumnIndex(3);
-                    var dt = DateTimeOffset.FromUnixTimeSeconds(Math.Max(0, e.LastSeenUnixSeconds)).UtcDateTime;
-                    ImGui.TextUnformatted(dt == DateTime.MinValue ? "-" : dt.ToString("yyyy-MM-dd HH:mm:ss"));
-
-                    ImGui.TableSetColumnIndex(4);
-                    ImGui.TextUnformatted(AgeString(e.LastSeenUnixSeconds));
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton($"Delete##ff_cache_del_{i}"))
-                    {
-                        entries.RemoveAt(i);
-                        cfg.Save();
-                        i--;
-                    }
-                }
-
-                ImGui.EndTable();
-            }
-        }
-    }
-
-    private static string AgeString(long unixSeconds)
-    {
-        if (unixSeconds <= 0) return "-";
-        var then = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
-        var span = DateTimeOffset.UtcNow - then;
-
-        if (span.TotalSeconds < 60) return $"{(int)span.TotalSeconds}s ago";
-        if (span.TotalMinutes < 60) return $"{(int)span.TotalMinutes}m ago";
-        if (span.TotalHours < 48) return $"{(int)span.TotalHours}h ago";
-        return $"{(int)Math.Round(span.TotalDays)}d ago";
-    }
-
-    // ===========================
-    // Extra Friends section
-    // ===========================
     private void DrawExtraFriends()
     {
-        ImGui.TextUnformatted("Extra Friends (treated exactly like FRIENDS by this plugin)");
-        ImGui.TextDisabled("Add exact character name and world. Case insensitive. You can also add via right-click context menu.");
-
+        ImGui.TextUnformatted("Extra Friends (Treats listed players as friends by this plugin only)");
+        ImGui.TextDisabled("Add exact character name and world. Case sensitive.");
+        ImGui.TextDisabled("Players can also be added through the context menu.");
         DrawAddRowResponsive();
 
         ImGui.Spacing();
 
         var entries = Configuration.ExtraFriends;
-
-        // One more inline pass so bad rows never render
-        if (InlinePurgeInvalidEntries(entries))
-            Configuration.Save();
-
         var flags =
             ImGuiTableFlags.Borders |
             ImGuiTableFlags.RowBg |
@@ -293,82 +220,90 @@ public class ConfigWindow : Window, IDisposable
             ImGuiTableFlags.ScrollY;
 
         var avail = ImGui.GetContentRegionAvail();
-        float tableHeight = MathF.Max(180f, avail.Y - 60f);
-        using (ImRaii.Child("##ff_table_wrap", new Vector2(0, tableHeight), true))
+        float tableHeight = MathF.Max(200f, avail.Y - (showDebug ? 180f : 6f));
+
+        // Single-box presentation (no double frame)
+        if (ImGui.BeginTable("##ff_extrafriends", 4, flags, new Vector2(0, tableHeight)))
         {
-            if (ImGui.BeginTable("##ff_extrafriends", 3, flags))
+            ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.50f);
+            ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.WidthStretch, 0.20f);
+            ImGui.TableSetupColumn("PlayerId", ImGuiTableColumnFlags.WidthStretch, 0.20f);
+            ImGui.TableSetupColumn("Remove", ImGuiTableColumnFlags.WidthStretch, 0.10f);
+            ImGui.TableHeadersRow();
+
+            for (int i = 0; i < entries.Count; i++)
             {
-                ImGui.TableSetupScrollFreeze(0, 1);
-                ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.60f);
-                ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.WidthStretch, 0.25f);
-                ImGui.TableSetupColumn("Remove", ImGuiTableColumnFlags.WidthStretch, 0.15f);
-                ImGui.TableHeadersRow();
+                var e = entries[i];
+                ImGui.TableNextRow();
 
-                for (int i = 0; i < entries.Count; i++)
+                ImGui.TableSetColumnIndex(0);
+                ImGui.TextUnformatted(e.Name);
+
+                ImGui.TableSetColumnIndex(1);
+                ImGui.TextUnformatted(WorldName(e.WorldId) ?? $"#{e.WorldId}");
+
+                ImGui.TableSetColumnIndex(2);
+                var cid = ResolveContentIdForExtraFriend(e.Name, e.WorldId);
+                ImGui.TextUnformatted(cid != 0 ? $"{cid:X}" : "-");
+
+                ImGui.TableSetColumnIndex(3);
+                using (ImRaii.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(6, 3)))
                 {
-                    var e = entries[i];
-                    ImGui.TableNextRow();
-
-                    ImGui.TableSetColumnIndex(0);
-                    ImGui.TextUnformatted(e.Name);
-
-                    ImGui.TableSetColumnIndex(1);
-                    ImGui.TextUnformatted(WorldName(e.WorldId) ?? $"#{e.WorldId}");
-
-                    ImGui.TableSetColumnIndex(2);
-                    using (ImRaii.PushStyle(ImGuiStyleVar.FramePadding, new Vector2(6, 3)))
+                    if (ImGui.SmallButton($"Delete##ff_rm_{i}"))
                     {
-                        if (ImGui.SmallButton($"Delete##ff_rm_{i}"))
-                        {
-                            entries.RemoveAt(i);
-                            Configuration.Save();
-                            i--;
-                        }
+                        entries.RemoveAt(i);
+                        Configuration.Save();
+                        i--;
                     }
                 }
-
-                ImGui.EndTable();
             }
-        }
 
-        ImGui.Spacing();
-        if (entries.Count > 0 && ImGui.Button("Clear All"))
-        {
-            entries.Clear();
-            Configuration.Save();
+            ImGui.EndTable();
         }
     }
 
-    // Purge entries with worldId == 0/65535 or unknown to the sheet. Returns true if any were removed.
-    private bool InlinePurgeInvalidEntries(System.Collections.Generic.List<ShowEntry> list)
+    private ulong ResolveContentIdForExtraFriend(string name, ushort worldId)
     {
-        var sheet = Plugin.DataManager.GetExcelSheet<World>();
-        bool removedAny = false;
+        // Prefer cache (name + world match if known)
+        var match = Configuration.FriendCache.FirstOrDefault(x =>
+            !string.IsNullOrWhiteSpace(x.Name) &&
+            string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase) &&
+            (worldId == 0 || x.WorldId == worldId) &&
+            x.ContentId != 0);
 
-        for (int i = list.Count - 1; i >= 0; --i)
+        if (match != null)
+            return match.ContentId;
+
+        // Try live objects
+        try
         {
-            var e = list[i];
-            if (e == null || string.IsNullOrWhiteSpace(e.Name) || e.WorldId == 0 || e.WorldId == 65535)
-            {
-                list.RemoveAt(i);
-                removedAny = true;
-                continue;
-            }
+            var livePc = Plugin.ObjectTable
+                .OfType<IPlayerCharacter>()
+                .FirstOrDefault(pc =>
+                    pc != null &&
+                    string.Equals(pc.Name?.TextValue ?? string.Empty, name, StringComparison.OrdinalIgnoreCase) &&
+                    (worldId == 0 || pc.HomeWorld.RowId == worldId || pc.CurrentWorld.RowId == worldId));
 
-            if (sheet != null && !sheet.TryGetRow(e.WorldId, out _))
+            if (livePc != null)
             {
-                list.RemoveAt(i);
-                removedAny = true;
+                unsafe
+                {
+                    var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)livePc.Address;
+                    if (chara != null && chara->ContentId != 0)
+                        return chara->ContentId;
+                }
             }
         }
+        catch { /* ignore */ }
 
-        return removedAny;
+        return 0;
     }
 
     private void DrawAddRowResponsive()
     {
         float availX = ImGui.GetContentRegionAvail().X;
-        bool narrow = availX < 520f;
+        bool narrow = availX < 560f;
 
         if (!narrow)
         {
@@ -383,17 +318,17 @@ public class ConfigWindow : Window, IDisposable
 
                 ImGui.TableNextColumn();
                 ImGui.PushItemWidth(-1);
-                var nameEnter = ImGui.InputTextWithHint("##ff_name", "Character Name (e.g., Apple Soda)", ref newPlayerName, 64, ImGuiInputTextFlags.EnterReturnsTrue);
+                ImGui.InputTextWithHint("##ff_name", "Character Name (e.g., Apple Soda)", ref newPlayerName, 64);
                 ImGui.PopItemWidth();
 
                 ImGui.TableNextColumn();
                 ImGui.PushItemWidth(-1);
-                var worldEnter = ImGui.InputTextWithHint("##ff_world", "World (e.g., Gilgamesh)", ref newWorldName, 48, ImGuiInputTextFlags.EnterReturnsTrue);
+                ImGui.InputTextWithHint("##ff_world", "World (e.g., Gilgamesh)", ref newWorldName, 48);
                 ImGui.PopItemWidth();
 
                 ImGui.TableNextColumn();
                 float btnW = ImGui.GetContentRegionAvail().X;
-                if (ImGui.Button("Add##ff_add_btn", new Vector2(btnW, 0)) || nameEnter || worldEnter)
+                if (ImGui.Button("Add", new Vector2(btnW, 0)))
                     TryAddExtraFriend();
 
                 ImGui.EndTable();
@@ -408,7 +343,7 @@ public class ConfigWindow : Window, IDisposable
         else
         {
             ImGui.PushItemWidth(-1);
-            var nameEnter = ImGui.InputTextWithHint("##ff_name", "Character Name (e.g., Apple Soda)", ref newPlayerName, 64, ImGuiInputTextFlags.EnterReturnsTrue);
+            ImGui.InputTextWithHint("##ff_name", "Character Name (e.g., Apple Soda)", ref newPlayerName, 64);
             ImGui.PopItemWidth();
 
             if (!string.IsNullOrEmpty(lastAddError))
@@ -424,12 +359,12 @@ public class ConfigWindow : Window, IDisposable
 
                 ImGui.TableNextColumn();
                 ImGui.PushItemWidth(-1);
-                var worldEnter = ImGui.InputTextWithHint("##ff_world", "World (e.g., Gilgamesh)", ref newWorldName, 48, ImGuiInputTextFlags.EnterReturnsTrue);
+                ImGui.InputTextWithHint("##ff_world", "World (e.g., Gilgamesh)", ref newWorldName, 48);
                 ImGui.PopItemWidth();
 
                 ImGui.TableNextColumn();
                 float btnW = ImGui.GetContentRegionAvail().X;
-                if (ImGui.Button("Add##ff_add_btn_narrow", new Vector2(btnW, 0)) || nameEnter || worldEnter)
+                if (ImGui.Button("Add", new Vector2(btnW, 0)))
                     TryAddExtraFriend();
 
                 ImGui.EndTable();
@@ -468,7 +403,6 @@ public class ConfigWindow : Window, IDisposable
         // Auto-clear inputs after successful add
         newPlayerName = string.Empty;
         newWorldName = string.Empty;
-        lastAddError = string.Empty;
     }
 
     private ushort ResolveWorldId(string worldName)
@@ -494,5 +428,69 @@ public class ConfigWindow : Window, IDisposable
             return row.Name.ToString();
 
         return null;
+    }
+
+    private void DrawCacheBox()
+    {
+        ImGui.TextUnformatted("ContentId Friend Cache");
+        ImGui.TextDisabled("Seeded from Friend List and context menu adds by ContentId.");
+        ImGui.Spacing();
+
+        var cache = Configuration.FriendCache;
+        if (ImGui.BeginTable("##ff_cache", 4, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.RowBg | ImGuiTableFlags.Borders | ImGuiTableFlags.Resizable))
+        {
+            ImGui.TableSetupColumn("PlayerId", ImGuiTableColumnFlags.WidthStretch, 0.35f);
+            ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 0.30f);
+            ImGui.TableSetupColumn("World", ImGuiTableColumnFlags.WidthStretch, 0.20f);
+            ImGui.TableSetupColumn("Last Seen", ImGuiTableColumnFlags.WidthStretch, 0.15f);
+            ImGui.TableHeadersRow();
+
+            for (int i = 0; i < cache.Count; i++)
+            {
+                var e = cache[i];
+                ImGui.TableNextRow();
+                ImGui.TableSetColumnIndex(0); ImGui.Text($"{e.ContentId:X}");
+                ImGui.TableSetColumnIndex(1); ImGui.TextUnformatted(e.Name ?? string.Empty);
+                ImGui.TableSetColumnIndex(2); ImGui.TextUnformatted(WorldName(e.WorldId) ?? (e.WorldId == 0 ? "-" : $"#{e.WorldId}"));
+                ImGui.TableSetColumnIndex(3); ImGui.TextUnformatted(e.LastSeenUnixSeconds > 0
+                    ? DateTimeOffset.FromUnixTimeSeconds(e.LastSeenUnixSeconds).LocalDateTime.ToString("g")
+                    : "-");
+            }
+
+            ImGui.EndTable();
+        }
+
+        ImGui.Spacing();
+        if (ImGui.Button("Trim (TTL)"))
+        {
+            int before = cache.Count;
+            var days = Math.Max(7, Configuration.FriendCacheDaysToLive <= 0 ? 90 : Configuration.FriendCacheDaysToLive);
+            long cutoff = DateTimeOffset.UtcNow.AddDays(-days).ToUnixTimeSeconds();
+            cache.RemoveAll(e => e.ContentId == 0 || e.LastSeenUnixSeconds <= 0 || e.LastSeenUnixSeconds < cutoff);
+            if (cache.Count != before) Configuration.Save();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Clear Cache"))
+        {
+            cache.Clear();
+            Configuration.Save();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Seed Now"))
+        {
+            int add = Plugin.SeedFriendCacheFromAgentFriendlist();
+            if (add > 0) Configuration.Save();
+        }
+
+        // ⬇️ Restored: First-Run Window reset button (debug area)
+        ImGui.SameLine();
+        if (ImGui.Button("Reset First-Run Notice"))
+        {
+            Plugin.ResetFirstRunNotice();
+        }
+
+        ImGui.SameLine();
+        ImGui.TextDisabled($"Entries: {cache.Count} | Last seed +{Plugin.LastBuddySeedAdded} @ {(Plugin.LastBuddySeedUtc == default ? "-" : Plugin.LastBuddySeedUtc.ToLocalTime().ToString("T"))}");
     }
 }

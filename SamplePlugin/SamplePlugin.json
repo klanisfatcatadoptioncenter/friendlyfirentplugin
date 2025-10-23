@@ -2,7 +2,7 @@
   "Author": "obesefeline",
   "Name": "FriendlyFire",
   "Punchline": "Displays PlayerNames of friends in Frontlines.",
-  "Description": "Use /friendlyfire to toggle the configuration window!.",
+  "Description": "Use /friendlyfire to toggle the configuration window.",
   "ApplicableVersion": "any",
   "Tags": [
     "sample",

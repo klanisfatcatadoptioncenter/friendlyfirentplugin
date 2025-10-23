@@ -1,308 +1,305 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
+using System.Linq;
+
+// Dalamud
+using Dalamud.Game;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
-using Dalamud.Game.ClientState.Objects.Enums;    // StatusFlags
-using Dalamud.Game.ClientState.Objects.SubKinds; // IPlayerCharacter
+using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.NamePlate;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
-using FriendlyFire.Features;
-using FriendlyFire.Windows;
+
+// Role-colored line support
+using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
+
+// ClientStructs (for ContentId)
+using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+
+// Lumina
 using Lumina.Excel.Sheets;
 
 namespace FriendlyFire;
 
-public sealed class Plugin : IDalamudPlugin
+public sealed unsafe class Plugin : IDalamudPlugin
 {
     public string Name => "FriendlyFire";
 
-    // ---- Dalamud services ----
+    // ===== Dalamud Services =====
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
-    [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
-    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
-    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog PluginLog { get; private set; } = null!;
-    [PluginService] internal static INamePlateGui NamePlateGui { get; private set; } = null!;
-    [PluginService] internal static IContextMenu ContextMenu { get; private set; } = null!;
-    [PluginService] internal static IToastGui ToastGui { get; private set; } = null!;
+    [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
+    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static INamePlateGui NamePlateGui { get; private set; } = null!;
     [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
-    [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static IContextMenu ContextMenu { get; private set; } = null!;
 
-    // ---- Commands ----
-    private const string CommandMain = "/ffmain";        // toggle window
-    private const string CommandScr = "/scrambletest";  // toggle: scramble FRIEND names outside PvP
-    private const string CommandCfg = "/friendlyfire";  // alias: toggle window
-
-    // ---- UI ----
+    // ===== Config & UI =====
     internal Configuration Configuration { get; }
-    private readonly WindowSystem WindowSystem = new("FriendlyFire");
-    internal ConfigWindow ConfigWindow { get; }
-    private ContextMenuFeature? ctxFeature;
+    private readonly WindowSystem windowSystem = new("FriendlyFire");
+    internal Windows.ConfigWindow? ConfigWindow { get; }
+    private Windows.FirstRunWindow? FirstRunWindow { get; set; }
 
-    // ---- Friend cache housekeeping ----
-    private DateTime lastFriendCacheScanUtc = DateTime.MinValue;
-    private DateTime lastFriendCacheTrimUtc = DateTime.MinValue;
+    // ===== Commands =====
+    private const string CmdMain = "/friendlyfire";
 
-    // Fallback watcher state (for GameGui polling)
-    private bool friendListWasVisible = false;
+    // ===== Housekeeping =====
+    private DateTime lastTrimUtc = DateTime.MinValue;
 
-    // Exposed for Debug UI
+    // Seed scheduler (multiple one-shots)
+    private readonly List<DateTime> pendingSeedsUtc = new();
+    private DateTime lastFriendListEventUtc = DateTime.MinValue;
+
+    // Debug exposure (read-only)
     public DateTime LastBuddySeedUtc { get; private set; } = DateTime.MinValue;
     public int LastBuddySeedAdded { get; private set; } = 0;
 
-    // UI seeder
-    private FriendListSeeder? friendSeeder;
+    // Context menu feature (legacy, known-working)
+    private FriendlyFire.Features.ContextMenuFeature? ctxFeatureLegacy;
 
     public Plugin()
     {
-        // Load/save config
-        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration { Version = 4 };
-        Configuration.FriendCache ??= new List<CachedFriendEntry>();
-        Configuration.ExtraFriends ??= new List<ShowEntry>();
+        // Load / initialize configuration
+        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration { Version = 6 };
+        Configuration.Initialize(PluginInterface);
 
-        // Hygiene on load
+        // Defensive init
+        Configuration.ExtraFriends ??= new();
+        Configuration.ExtraFriendCids ??= new();
+        Configuration.FriendCache ??= new();
+
+        // Hygiene at load
         CleanExtraFriends(save: true, validateWithSheet: true);
 
-        // Seeder for FriendList UI
-        friendSeeder = new FriendListSeeder(DataManager, GameGui, PluginLog);
+        // Windows
+        ConfigWindow = new Windows.ConfigWindow(this);
+        windowSystem.AddWindow(ConfigWindow);
 
-        // Window
-        ConfigWindow = new ConfigWindow(this);
-        WindowSystem.AddWindow(ConfigWindow);
+        FirstRunWindow = new Windows.FirstRunWindow(this);
+        windowSystem.AddWindow(FirstRunWindow);
 
-        // Slash commands
-        CommandManager.AddHandler(CommandMain, new CommandInfo(OnToggleWindow) { HelpMessage = "Toggle FriendlyFire window" });
-        CommandManager.AddHandler(CommandScr, new CommandInfo(OnScrambleCmd) { HelpMessage = "Toggle: scramble FRIEND names outside PvP (field test)" });
-        CommandManager.AddHandler(CommandCfg, new CommandInfo(OnToggleWindow) { HelpMessage = "Toggle FriendlyFire window" });
-
-        // UI hooks
-        PluginInterface.UiBuilder.Draw += () => WindowSystem.Draw();
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
+        PluginInterface.UiBuilder.Draw += () => windowSystem.Draw();
         PluginInterface.UiBuilder.OpenMainUi += ToggleWindow;
+        PluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
 
-        // Nameplate updates
+        // Commands
+        CommandManager.AddHandler(CmdMain, new CommandInfo(OnCmdToggleWindow)
+        {
+            HelpMessage = "Open/Close FriendlyFire settings"
+        });
+
+        // Nameplates
         NamePlateGui.OnNamePlateUpdate += OnNamePlateUpdate;
 
-        // Background: observe & trim friend cache
+        // For delayed seeding & periodic trimming only
         Framework.Update += OnFrameworkUpdate;
 
-        // Addon lifecycle hooks: seed when Friends window opens/refreshed
-        TryRegisterAddonListener(AddonEvent.PostSetup, "FriendList");
-        TryRegisterAddonListener(AddonEvent.PostRefresh, "FriendList");
+        // FriendList lifecycle: schedule two seeds (quick + deep) & notify first-run window
+        AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "FriendList", OnFriendListOpenedOrRefreshed);
+        AddonLifecycle.RegisterListener(AddonEvent.PostRefresh, "FriendList", OnFriendListOpenedOrRefreshed);
 
-        // Context menu feature (silent; no toasts)
-        ctxFeature = new ContextMenuFeature(this, ContextMenu);
+        // ===== Context menu =====
+        // Use ONLY the legacy feature that worked for you.
+        ctxFeatureLegacy = new FriendlyFire.Features.ContextMenuFeature(this, ContextMenu);
+
+        PluginLog.Info($"{Name} loaded.");
     }
 
     public void Dispose()
     {
-        NamePlateGui.OnNamePlateUpdate -= OnNamePlateUpdate;
+        ctxFeatureLegacy?.Dispose();
+
+        AddonLifecycle.UnregisterListener(OnFriendListOpenedOrRefreshed);
         Framework.Update -= OnFrameworkUpdate;
+        NamePlateGui.OnNamePlateUpdate -= OnNamePlateUpdate;
 
-        try { AddonLifecycle.UnregisterListener(OnFriendListEvent); } catch { /* ignore */ }
+        CommandManager.RemoveHandler(CmdMain);
 
-        ctxFeature?.Dispose();
-        ctxFeature = null;
+        windowSystem.RemoveAllWindows();
+        ConfigWindow?.Dispose();
+        FirstRunWindow?.Dispose();
 
-        WindowSystem.RemoveAllWindows();
-        ConfigWindow.Dispose();
-
-        CommandManager.RemoveHandler(CommandMain);
-        CommandManager.RemoveHandler(CommandScr);
-        CommandManager.RemoveHandler(CommandCfg);
+        PluginLog.Info($"{Name} disposed.");
     }
 
-    // ---- Command handlers ----
-    private void OnToggleWindow(string command, string args) => ToggleWindow();
-    public void ToggleWindow() => ConfigWindow.Toggle();
+    // ========= Commands =========
+    private void OnCmdToggleWindow(string cmd, string args) => ToggleWindow();
+    public void ToggleWindow() { if (ConfigWindow is not null) ConfigWindow.Toggle(); }
 
-    private void OnScrambleCmd(string _, string __)
+    // ========= Addon lifecycle (FriendList) =========
+    private void OnFriendListOpenedOrRefreshed(AddonEvent ev, AddonArgs args)
     {
-        Configuration.TestScrambleOutsidePvP = !Configuration.TestScrambleOutsidePvP;
-        Configuration.Save();
-        PluginLog.Info($"TestScrambleOutsidePvP (friends only) = {Configuration.TestScrambleOutsidePvP}");
+        // first-run helper: start its countdown if visible
+        FirstRunWindow?.NotifyFriendListOpened();
+
+        var now = DateTime.UtcNow;
+
+        // Avoid spamming: if events fire within 1s, treat them as the same open/refresh burst.
+        if ((now - lastFriendListEventUtc).TotalSeconds > 1.0)
+        {
+            lastFriendListEventUtc = now;
+
+            // Schedule two reads:
+            //  - quick pass soon after UI appears (350ms)
+            //  - deep pass 8s later to catch the fully paged friend list
+            ScheduleFriendSeed(TimeSpan.FromMilliseconds(350));
+            ScheduleFriendSeed(TimeSpan.FromSeconds(8));
+        }
+
+        PluginLog.Debug($"[FF SeedAgent] FriendList {ev}: scheduled seeds (+0.35s, +8s).");
     }
 
-    // ---- Addon lifecycle helpers ----
-    private void TryRegisterAddonListener(AddonEvent ev, string addon)
+    private void ScheduleFriendSeed(TimeSpan delay)
     {
-        try { AddonLifecycle.RegisterListener(ev, addon, OnFriendListEvent); }
-        catch (Exception ex) { PluginLog.Debug($"AddonLifecycle.RegisterListener {ev} failed: {ex.Message}"); }
+        var when = DateTime.UtcNow + delay;
+
+        // Deduplicate any existing scheduled times within +/- 300ms
+        for (int i = 0; i < pendingSeedsUtc.Count; i++)
+        {
+            if (Math.Abs((pendingSeedsUtc[i] - when).TotalMilliseconds) <= 300)
+                return; // already scheduled near this time
+        }
+
+        pendingSeedsUtc.Add(when);
+        pendingSeedsUtc.Sort();
     }
 
-    private void OnFriendListEvent(AddonEvent type, AddonArgs args)
+    // ========= Framework.Update (run due seeds + cache trimming) =========
+    private void OnFrameworkUpdate(IFramework _)
     {
         try
         {
-            int added = friendSeeder?.TrySeedFromUi(AddOrTouchFriendCache) ?? 0;
-            LastBuddySeedUtc = DateTime.UtcNow;
-            LastBuddySeedAdded = added;
-            if (added > 0) Configuration.Save();
+            var now = DateTime.UtcNow;
+
+            // Run any due seeds (in order); if multiple are due, run them one after another
+            int ran = 0;
+            while (pendingSeedsUtc.Count > 0 && pendingSeedsUtc[0] <= now && ran < 3)
+            {
+                pendingSeedsUtc.RemoveAt(0);
+
+                int added = 0;
+                try
+                {
+                    added = SeedFriendCacheFromAgentFriendlist();
+                }
+                catch (Exception ex)
+                {
+                    PluginLog.Debug($"[FF SeedAgent] Seed crash guard: {ex.GetType().Name}: {ex.Message}");
+                }
+
+                LastBuddySeedUtc = now;
+                LastBuddySeedAdded = added;
+                if (added > 0) Configuration.Save();
+
+                PluginLog.Debug($"[FF SeedAgent] Seed ran; added {added} entr{(added == 1 ? "y" : "ies")}.");
+                ran++;
+            }
+
+            // Periodic TTL trim (once a minute)
+            if ((now - lastTrimUtc).TotalSeconds >= 60)
+            {
+                lastTrimUtc = now;
+                TrimFriendCache();
+            }
         }
         catch (Exception ex)
         {
-            PluginLog.Debug($"FriendList seed via UI failed: {ex}");
+            PluginLog.Debug($"FrameworkUpdate guard: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
-    // Public trigger for Debug UI
-    public (int added, int total) ForceSeedFriendCache()
+    /// <summary>
+    /// Read AgentFriendlist->InfoProxy->GetEntry(i) and add names/CIDs to local cache.
+    /// This does NOT send RequestData() and does NOT cause refresh loops.
+    /// Returns number of new/updated entries.
+    /// </summary>
+    public unsafe int SeedFriendCacheFromAgentFriendlist()
     {
-        int added = friendSeeder?.TrySeedFromUi(AddOrTouchFriendCache) ?? 0;
-        return (added, Configuration.FriendCache.Count);
-    }
-
-    // ---- Background friend-cache maintenance + FriendList visibility fallback ----
-    private void OnFrameworkUpdate(IFramework frame)
-    {
-        var now = DateTime.UtcNow;
-
-        // Scan outside PvP at most every 5s
-        if ((now - lastFriendCacheScanUtc).TotalSeconds >= 5)
+        if (ClientState.LocalPlayer is null)
         {
-            lastFriendCacheScanUtc = now;
-            ObserveFriendsOutsidePvP();
+            PluginLog.Debug("[FF SeedAgent] Not logged in / LocalPlayer null.");
+            return 0;
         }
 
-        // Trim cache at most every 60s
-        if ((now - lastFriendCacheTrimUtc).TotalSeconds >= 60)
-        {
-            lastFriendCacheTrimUtc = now;
-            TrimFriendCache();
-        }
-
-        // Fallback: detect FriendList open by addon name (if lifecycle hook didn't fire)
+        AgentFriendlist* agent;
         try
         {
-            var ptr = GameGui.GetAddonByName("FriendList", 1);
-            bool visibleNow = ptr != IntPtr.Zero;
-            if (visibleNow && !friendListWasVisible)
-            {
-                friendListWasVisible = true;
-                int added = friendSeeder?.TrySeedFromUi(AddOrTouchFriendCache) ?? 0;
-                LastBuddySeedUtc = DateTime.UtcNow;
-                LastBuddySeedAdded = added;
-                if (added > 0) Configuration.Save();
-            }
-            else if (!visibleNow && friendListWasVisible)
-            {
-                friendListWasVisible = false;
-            }
+            agent = AgentFriendlist.Instance();
         }
-        catch { /* ignore */ }
-    }
-
-    /// <summary>
-    /// Add to cache (or "touch" LastSeen) and return true iff this call created a NEW entry.
-    /// </summary>
-    private bool AddOrTouchFriendCache(string name, ushort worldId)
-    {
-        if (string.IsNullOrWhiteSpace(name) || worldId == 0) return false;
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var existing = Configuration.FriendCache.Find(e =>
-            e.WorldId == worldId &&
-            string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
-
-        if (existing is null)
+        catch (Exception ex)
         {
-            Configuration.FriendCache.Add(new CachedFriendEntry
-            {
-                Name = name,
-                WorldId = worldId,
-                LastSeenUnixSeconds = now
-            });
-            return true;
+            PluginLog.Debug($"[FF SeedAgent] AgentFriendlist.Instance() ex: {ex.GetType().Name}: {ex.Message}");
+            return 0;
         }
 
-        if (now - existing.LastSeenUnixSeconds > 60)
-            existing.LastSeenUnixSeconds = now;
-
-        return false;
-    }
-
-    /// <summary>
-    /// Outside PvP, record players that have the Friend flag into the local cache.
-    /// </summary>
-    private void ObserveFriendsOutsidePvP()
-    {
-        if (ClientState.IsPvP) return;
-
-        var cfg = Configuration;
-        long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        bool changed = false;
-
-        for (int i = 0; i < ObjectTable.Length; i++)
+        if (agent == null)
         {
-            var obj = ObjectTable[i];
-            if (obj is not IPlayerCharacter pc) continue;
+            PluginLog.Debug("[FF SeedAgent] AgentFriendlist null.");
+            return 0;
+        }
 
-            if ((pc.StatusFlags & StatusFlags.Friend) == 0) continue;
+        if (agent->InfoProxy == null)
+        {
+            PluginLog.Debug("[FF SeedAgent] agent->InfoProxy null (addon not ready).");
+            return 0;
+        }
 
-            var name = pc.Name?.TextValue;
-            var world = (ushort)pc.HomeWorld.RowId;
-            if (string.IsNullOrWhiteSpace(name) || world == 0) continue;
+        uint count;
+        try { count = agent->InfoProxy->EntryCount; }
+        catch (Exception ex)
+        {
+            PluginLog.Debug($"[FF SeedAgent] Read EntryCount ex: {ex.GetType().Name}: {ex.Message}");
+            return 0;
+        }
 
-            var existing = cfg.FriendCache.Find(e =>
-                e.WorldId == world &&
-                string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (count == 0)
+        {
+            PluginLog.Debug("[FF SeedAgent] EntryCount=0 (Friend List empty or still populating).");
+            return 0;
+        }
 
-            if (existing is null)
+        int added = 0;
+
+        for (uint i = 0; i < count; i++)
+        {
+            try
             {
-                cfg.FriendCache.Add(new CachedFriendEntry
-                {
-                    Name = name!,
-                    WorldId = world,
-                    LastSeenUnixSeconds = nowUnix
-                });
-                changed = true;
+                var f = agent->InfoProxy->GetEntry(i);
+                if (f == null) continue;
+
+                var name = f->NameString;
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                // Prefer current world, fall back to home world; 0 if unknown
+                ushort worldId = (ushort)(f->CurrentWorld != 0 ? f->CurrentWorld :
+                                          f->HomeWorld != 0 ? f->HomeWorld : 0);
+
+                ulong cid = f->ContentId;
+
+                if (AddOrTouchFriendCache(name.Trim(), worldId, cid))
+                    added++;
             }
-            else
+            catch (Exception ex)
             {
-                if (nowUnix - existing.LastSeenUnixSeconds > 60)
-                {
-                    existing.LastSeenUnixSeconds = nowUnix;
-                    changed = true;
-                }
+                PluginLog.Debug($"[FF SeedAgent] GetEntry({i}) ex: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        if (changed)
-            cfg.Save();
+        PluginLog.Debug($"[FF SeedAgent] Added {added} from AgentFriendlist (count={count}).");
+        return added;
     }
 
-    /// <summary>
-    /// Periodically remove very old or invalid cache entries.
-    /// </summary>
-    private void TrimFriendCache()
-    {
-        var cfg = Configuration;
-        if (cfg.FriendCache.Count == 0) return;
-
-        int days = Math.Max(7, cfg.FriendCacheDaysToLive <= 0 ? 90 : cfg.FriendCacheDaysToLive);
-        long cutoff = DateTimeOffset.UtcNow.AddDays(-days).ToUnixTimeSeconds();
-
-        int before = cfg.FriendCache.Count;
-        cfg.FriendCache.RemoveAll(e =>
-            e == null ||
-            e.WorldId == 0 ||
-            string.IsNullOrWhiteSpace(e.Name) ||
-            e.LastSeenUnixSeconds <= 0 ||
-            e.LastSeenUnixSeconds < cutoff);
-
-        if (cfg.FriendCache.Count != before)
-            cfg.Save();
-    }
-
-    // ---- Nameplate logic (friends = flag OR local cache in PvP OR ExtraFriends) ----
+    // ========= Nameplate logic (single-line: [ROLE-COLORED JOB] Real Name) =========
     private void OnNamePlateUpdate(INamePlateUpdateContext context, IReadOnlyList<INamePlateUpdateHandler> handlers)
     {
         bool inPvp = ClientState.IsPvP;
@@ -321,66 +318,201 @@ public sealed class Plugin : IDalamudPlugin
 
             bool isFriend = IsFriendOrExtra(pc);
 
+            void ShowOneLineJobAndName()
+            {
+                // === Role tag toggle respected here ===
+                if (!Configuration.ShowRoleTag)
+                {
+                    // Role tag OFF: just show real name and clear top line
+                    plate.SetField(NamePlateStringField.Name, new SeStringBuilder().AddText(realName!).Build());
+                    plate.SetField(NamePlateStringField.Title, string.Empty);
+                    return;
+                }
+
+                // Build single-line [JOB] Name; color role only if not in PvP (alliance color overrides in PvP).
+                var se = inPvp
+                    ? BuildNameWithJob_Plain(pc, realName!)
+                    : BuildNameWithJob_Colored(pc, realName!);
+
+                plate.SetField(NamePlateStringField.Name, se);
+
+                // Always clear any top line to avoid above/below variance
+                plate.SetField(NamePlateStringField.Title, string.Empty);
+            }
+
+            void ScrambleAndClearTop()
+            {
+                plate.SetField(NamePlateStringField.Name, ScrambleNameReadable(realName!));
+                plate.SetField(NamePlateStringField.Title, string.Empty);
+            }
+
+            void LeaveDefaultButClearTop()
+            {
+                plate.SetField(NamePlateStringField.Title, string.Empty);
+            }
+
             if (inPvp)
             {
                 if (Configuration.ScrambleAllInPvP)
                 {
                     if (isFriend && showFriends)
-                        plate.SetField(NamePlateStringField.Name, realName);
+                        ShowOneLineJobAndName();
                     else
-                        plate.SetField(NamePlateStringField.Name, ScrambleNameReadable(realName));
+                        ScrambleAndClearTop();
                     continue;
                 }
 
                 if (Configuration.ShowRealNamesOnlyInPvP)
                 {
-                    plate.SetField(NamePlateStringField.Name, realName);
+                    ShowOneLineJobAndName();
                     continue;
                 }
 
                 if (showFriends && isFriend)
                 {
-                    plate.SetField(NamePlateStringField.Name, realName);
+                    ShowOneLineJobAndName();
                     continue;
                 }
 
-                continue; // default PvP (job-only)
+                LeaveDefaultButClearTop();
+                continue;
             }
 
             if (Configuration.TestScrambleOutsidePvP && isFriend)
             {
                 if (showFriends)
-                    plate.SetField(NamePlateStringField.Name, realName);
+                    ShowOneLineJobAndName();
                 else
-                    plate.SetField(NamePlateStringField.Name, ScrambleNameReadable(realName));
+                    ScrambleAndClearTop();
                 continue;
             }
+
+            LeaveDefaultButClearTop();
         }
     }
 
-    private static bool HasFriendFlag(IPlayerCharacter pc)
-        => (pc.StatusFlags & StatusFlags.Friend) != 0;
+    // ===== Role + Job helpers (whitelist) =====
+    private enum FfRole { Tank, Healer, Dps }
 
-    /// <summary>
-    /// Friend if:
-    /// 1) Friend status flag, OR
-    /// 2) (In PvP AND UseFriendCacheInPvP) cache match (name+world), OR
-    /// 3) ExtraFriends entry.
-    /// </summary>
-    internal bool IsFriendOrExtra(IPlayerCharacter pc)
+    private static readonly HashSet<string> TankAbbr = new(StringComparer.OrdinalIgnoreCase)
+    { "PLD", "WAR", "DRK", "GNB" };
+
+    private static readonly HashSet<string> HealerAbbr = new(StringComparer.OrdinalIgnoreCase)
+    { "WHM", "SCH", "AST", "SGE" };
+
+    private static string GetJobAbbrev(IPlayerCharacter pc)
     {
-        if (HasFriendFlag(pc)) return true;
+        try
+        {
+            var sheet = DataManager.GetExcelSheet<ClassJob>();
+            if (sheet != null && sheet.TryGetRow((uint)pc.ClassJob.RowId, out var job))
+                return job.Abbreviation.ToString();
+        }
+        catch { /* ignore */ }
+        return string.Empty;
+    }
 
+    private static FfRole GetRole(IPlayerCharacter pc)
+    {
+        try
+        {
+            var sheet = DataManager.GetExcelSheet<ClassJob>();
+            if (sheet != null && sheet.TryGetRow((uint)pc.ClassJob.RowId, out var job))
+            {
+                var abbr = job.Abbreviation.ToString();
+                if (TankAbbr.Contains(abbr)) return FfRole.Tank;
+                if (HealerAbbr.Contains(abbr)) return FfRole.Healer;
+
+                // Optional fallback to sheet Role (common mapping: 1=Tank, 4=Healer)
+                var rv = (int)job.Role;
+                if (rv == 1) return FfRole.Tank;
+                if (rv == 4) return FfRole.Healer;
+            }
+        }
+        catch { /* ignore */ }
+        return FfRole.Dps;
+    }
+
+    private static ushort GetRoleColorId(IPlayerCharacter pc)
+    {
+        return GetRole(pc) switch
+        {
+            FfRole.Tank => (ushort)517, // blue
+            FfRole.Healer => (ushort)45,  // green
+            _ => (ushort)506, // red for DPS
+        };
+    }
+
+    // Build one-line "[JOB] Real Name" (colored role)
+    private static SeString BuildNameWithJob_Colored(IPlayerCharacter pc, string realName)
+    {
+        var job = GetJobAbbrev(pc);
+        if (string.IsNullOrEmpty(job))
+            return new SeStringBuilder().AddText(realName).Build();
+
+        return new SeStringBuilder()
+            .AddUiForeground(GetRoleColorId(pc))
+            .AddText(job)
+            .AddUiForegroundOff()
+            .AddText(" ")
+            .AddText(realName)
+            .Build();
+    }
+
+    // Build one-line "[JOB] Real Name" (plain, for PvP so alliance color can apply)
+    private static SeString BuildNameWithJob_Plain(IPlayerCharacter pc, string realName)
+    {
+        var job = GetJobAbbrev(pc);
+        if (string.IsNullOrEmpty(job))
+            return new SeStringBuilder().AddText(realName).Build();
+
+        return new SeStringBuilder()
+            .AddText(job)
+            .AddText(" ")
+            .AddText(realName)
+            .Build();
+    }
+
+    // ========= Friend checks =========
+    private static bool HasFriendFlag(IPlayerCharacter pc)
+        => (pc.StatusFlags & Dalamud.Game.ClientState.Objects.Enums.StatusFlags.Friend) != 0;
+
+    internal unsafe bool IsFriendOrExtra(IPlayerCharacter pc)
+    {
+        // Fast path: official friend flag
+        if (HasFriendFlag(pc))
+            return true;
+
+        // Prefer CID match (extra-friends via context menu OR cache)
+        try
+        {
+            var chara = (Character*)pc.Address;
+            if (chara != null && chara->ContentId != 0)
+            {
+                if (Configuration.ExtraFriendCids.Contains(chara->ContentId))
+                    return true;
+
+                if (ClientState.IsPvP && Configuration.UseFriendCacheInPvP)
+                {
+                    if (Configuration.FriendCache.Any(e => e.ContentId == chara->ContentId))
+                        return true;
+                }
+            }
+        }
+        catch { /* ignore */ }
+
+        // Fallbacks: cache by name/world & manual entries
         var name = pc.Name?.TextValue ?? string.Empty;
         var world = (ushort)pc.HomeWorld.RowId;
 
-        if (ClientState.IsPvP && Configuration.UseFriendCacheInPvP && world != 0 && name.Length > 0)
+        if (ClientState.IsPvP && Configuration.UseFriendCacheInPvP && name.Length > 0)
         {
             var cache = Configuration.FriendCache;
             for (int i = 0; i < cache.Count; i++)
             {
                 var e = cache[i];
-                if (e.WorldId == world && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase))
+                if ((e.WorldId == 0 || e.WorldId == world) &&
+                    string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
         }
@@ -401,9 +533,10 @@ public sealed class Plugin : IDalamudPlugin
         return false;
     }
 
+    // ========= Scramble helper (used in PvP when scrambling non-friends) =========
     private static string ScrambleNameReadable(string name)
     {
-        var parts = name.Split(' ');
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (int p = 0; p < parts.Length; p++)
         {
             var s = parts[p];
@@ -431,18 +564,95 @@ public sealed class Plugin : IDalamudPlugin
         return (hash[0] << 24) | (hash[1] << 16) | (hash[2] << 8) | (hash[3]);
     }
 
-    // -------- Strong cleaner --------
-    /// <summary>
-    /// Remove bad Extra Friends: null, empty name, worldId == 0/65535, or worldId not present in the World sheet.
-    /// Returns number removed. Saves config if 'save' is true and any were removed.
-    /// </summary>
+    // ========= Cache utilities =========
+    private bool AddOrTouchFriendCache(string name, ushort worldId, ulong contentId)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var cache = Configuration.FriendCache;
+
+        // CID-exact match exists?
+        var existingCid = (contentId != 0)
+            ? cache.Find(e => e.ContentId == contentId)
+            : null;
+
+        if (existingCid is not null)
+        {
+            // Update name/world if newer/better
+            if (!string.Equals(existingCid.Name, name, StringComparison.Ordinal))
+                existingCid.Name = name;
+            if (existingCid.WorldId == 0 && worldId != 0)
+                existingCid.WorldId = worldId;
+            if (now - existingCid.LastSeenUnixSeconds > 60)
+                existingCid.LastSeenUnixSeconds = now;
+            return false;
+        }
+
+        // If no CID, try name+world merge/upgrade
+        if (contentId == 0)
+        {
+            if (worldId == 0 && cache.Any(e =>
+                    e.WorldId != 0 && string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            var idx = cache.FindIndex(e =>
+                e.WorldId == 0 &&
+                string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+
+            if (idx >= 0 && worldId != 0)
+            {
+                cache[idx].WorldId = worldId;
+                cache[idx].LastSeenUnixSeconds = now;
+                return true;
+            }
+
+            cache.Add(new CachedFriendEntry
+            {
+                ContentId = 0,
+                Name = name,
+                WorldId = worldId,
+                LastSeenUnixSeconds = now
+            });
+            return true;
+        }
+
+        // New CID entry
+        cache.Add(new CachedFriendEntry
+        {
+            ContentId = contentId,
+            Name = name,
+            WorldId = worldId,
+            LastSeenUnixSeconds = now
+        });
+        return true;
+    }
+
+    private void TrimFriendCache()
+    {
+        var cache = Configuration.FriendCache;
+        if (cache.Count == 0) return;
+
+        int days = Math.Max(7, Configuration.FriendCacheDaysToLive <= 0 ? 90 : Configuration.FriendCacheDaysToLive);
+        long cutoff = DateTimeOffset.UtcNow.AddDays(-days).ToUnixTimeSeconds();
+
+        int before = cache.Count;
+        cache.RemoveAll(e =>
+            e == null ||
+            string.IsNullOrWhiteSpace(e.Name) ||
+            e.LastSeenUnixSeconds <= 0 ||
+            e.LastSeenUnixSeconds < cutoff);
+
+        if (cache.Count != before)
+            Configuration.Save();
+    }
+
     internal int CleanExtraFriends(bool save, bool validateWithSheet)
     {
         var list = Configuration.ExtraFriends;
         if (list == null || list.Count == 0) return 0;
 
         HashSet<ushort>? validWorlds = null;
-
         if (validateWithSheet)
         {
             var sheet = DataManager.GetExcelSheet<World>();
@@ -459,22 +669,29 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        bool IsInvalid(ShowEntry? e)
+        bool IsInvalid(ShowEntry e)
         {
-            if (e == null) return true;
             if (string.IsNullOrWhiteSpace(e.Name)) return true;
-            if (e.WorldId == 0 || e.WorldId == 65535) return true; // common sentinel
+            if (e.WorldId == 0 || e.WorldId == 65535) return true;
             if (validWorlds != null && !validWorlds.Contains(e.WorldId)) return true;
             return false;
         }
 
         int before = list.Count;
-        list.RemoveAll(IsInvalid);
+        list.RemoveAll(e => IsInvalid(e));
         int removed = before - list.Count;
 
         if (removed > 0 && save)
             Configuration.Save();
 
         return removed;
+    }
+
+    // Exposed helper for ConfigWindow (debug reset)
+    internal void ResetFirstRunNotice()
+    {
+        Configuration.ShowFirstRunNotice = true;
+        Configuration.Save();
+        FirstRunWindow?.Reopen();
     }
 }

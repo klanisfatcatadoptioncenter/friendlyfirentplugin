@@ -15,8 +15,8 @@
 			"pvp"
 		],
 		
-		"DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
-		"DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
-		"DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip"
+		"DownloadLinkInstall": "https://raw.githubusercontent.com/klanisfatcatadoptioncenter/friendlyfirentplugin/main/latest.zip",
+		"DownloadLinkTesting": "https://raw.githubusercontent.com/klanisfatcatadoptioncenter/friendlyfirentplugin/main/latest.zip",
+		"DownloadLinkUpdate": "https://raw.githubusercontent.com/klanisfatcatadoptioncenter/friendlyfirentplugin/main/latest.zip"
 	}
 ]

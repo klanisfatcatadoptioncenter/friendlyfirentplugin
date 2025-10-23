@@ -1,25 +1,19 @@
 [
-{
-  "Author": "obesefeline",
-  "Name": "FriendlyFire",
-  "InternalName": "SamplePlugin",
-  "AssemblyVersion": "0.0.0.1",
-  "Description": "Use /friendlyfire to toggle the configuration window.",
-  "ApplicableVersion": "any",
-  "Tags": [
-    "sample",
-    "plugin",
-    "goats"
-  ],
-  "DalamudApiLevel": 13,
-  "LoadRequiredState": 0,
-  "LoadSync": false,
-  "CanUnloadAsync": false,
-  "LoadPriority": 0,
-  "Punchline": "Displays PlayerNames of friends in Frontlines.",
-  "AcceptsFeedback": false
-    "DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
-	"DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
-	"DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip"
-}
+  {
+    "Author": "obesefeline",
+    "Name": "FriendlyFire",
+    "InternalName": "FriendlyFire",
+    "Punchline": "Displays player names of friends in Frontlines.",
+    "Description": "Use /friendlyfire to toggle the configuration window.",
+    "AssemblyVersion": "0.0.0.1",
+    "TestingAssemblyVersion": "0.0.0.1",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 13,
+    "Tags": ["friendlyfire", "pvp", "friends"],
+    "RepoUrl": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin",
+    "IconUrl": "https://raw.githubusercontent.com/klanisfatcatadoptioncenter/friendlyfirentplugin/main/icon.png",
+    "DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip",
+    "DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip"
+  }
 ]

@@ -1,19 +1,22 @@
 [
-  {
-    "Author": "obesefeline",
-    "Name": "FriendlyFire",
-    "InternalName": "FriendlyFire",
-    "Punchline": "Displays player names of friends in Frontlines.",
-    "Description": "Use /friendlyfire to toggle the configuration window.",
-    "AssemblyVersion": "0.0.0.1",
-    "TestingAssemblyVersion": "0.0.0.1",
-    "ApplicableVersion": "any",
-    "DalamudApiLevel": 13,
-    "Tags": ["friendlyfire", "pvp", "friends"],
-    "RepoUrl": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin",
-    "IconUrl": "https://raw.githubusercontent.com/klanisfatcatadoptioncenter/friendlyfirentplugin/main/icon.png",
-    "DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip",
-    "DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/releases/latest/download/latest.zip"
-  }
+	{
+		"Author": "obesefeline",
+		"Name": "Friendlyfire",
+		"InternalName": "FriendlyFire",
+		"Punchline": "See your friends in Frontlines.",
+		"Description": "See your friends in Frontlines.",
+		"AssemblyVersion": "0.0.1",
+		"TestingAssemblyVersion": "0.0.1",
+		"RepoUrl": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/",
+		"ApplicableVersion": "any",
+		"DalamudApiLevel": 13,
+		"Tags": [
+			"frontlines",
+			"pvp"
+		],
+		
+		"DownloadLinkInstall": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
+		"DownloadLinkTesting": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip",
+		"DownloadLinkUpdate": "https://github.com/klanisfatcatadoptioncenter/friendlyfirentplugin/blob/main/latest.zip"
+	}
 ]
